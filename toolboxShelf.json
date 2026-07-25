@@ -234,9 +234,9 @@
 		]
 	},
 	"Yeti":{
-		"dependencies":[
-
-		],
+		"dependencies": {
+			"scripts": ["mel/yetiLicenceActivation.mel"]
+		},
 		"buttons": [
 			{
 				"icon":"cacheYetiFur.svg",
@@ -319,7 +319,7 @@
 	},
 	"Redshift":{
 		"dependencies": {
-			"scripts": ["RSPluginCheck.mel"]
+			"scripts": ["RSEnablePlugin.mel"]
 		},
 		"buttons": [
 			{
@@ -361,8 +361,8 @@
 			}
 		]
 	},
-	"Admin":{
-		"checkStatus":0,
+	"Project":{
+		"checkStatus":1,
 		"dependencies": {
 			"scripts": ["baseIO/loadSave.py", "baseIO/qtBase.py"]
 		},
@@ -434,6 +434,22 @@
 					"icons/gear.png"
 				],
 				"stp":"mel"
+			},
+			{
+				"icon":"separator"
+			}
+		]
+	},
+	"MCP Bridge":{
+		"dependencies":[
+		],
+		"buttons": [
+			{
+				"icon":"mcpBridge.svg",
+				"label":"Launch MCP Bridge",
+				"script":"Tools/mcpBridge.py",
+				"command":"import Tools.mcpBridge as mcpBridge;mcpBridge.launch_mcp_bridge()",
+				"stp":"python"
 			},
 			{
 				"icon":"separator"

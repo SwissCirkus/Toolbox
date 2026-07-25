@@ -7,24 +7,25 @@ import shutil
 import traceback
 import urllib.request
 
-from PySide2.QtCore import Qt
-from PySide2.QtWidgets import *
-from PySide2.QtGui import QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import *
+from PySide6.QtGui import QIcon
 from maya import cmds
 from maya import mel
 from maya.OpenMayaUI import MQtUtil
 from maya.app.general.mayaMixin import MayaQWidgetBaseMixin
-from shiboken2 import wrapInstance
+from shiboken6 import wrapInstance
 import urllib.request as request
 from typing import Optional
 
 __version__ = '1.0.0'
 
 # Core constant's
-_REPO = 'https://raw.githubusercontent.com/CirkusBackup/Toolbox/Installer-v2/'
+_REPO = 'https://raw.githubusercontent.com/SwissCirkus/Toolbox/Installer-v2/'
 _NETWORK_ROOT = '\\\\bigtop/bigtop'
 W_OBJ = 'cirkusinstallerwindow'
 W_TITLE = 'Cirkus Toolbox Installer'
+DEFAULT_PATH = 'Server (default)'
 
 
 def _maya_main_window():
@@ -281,7 +282,10 @@ class Installer:
         self.modules = []
         self.icons = []
 
-        self.install_scripts = scripts_path != 'Manually Install'
+        # Define if the icons or scripts should be installed into a
+        # locally defined dir.
+        self.install_scripts = scripts_path != DEFAULT_PATH
+        self.install_icons = icons_path != DEFAULT_PATH
 
         self.src_path: str = install_from['path']
         self.is_local: bool = install_from['is_local']
@@ -406,13 +410,18 @@ class Installer:
             if tool in self.to_install:
                 self.index_files(self.tool_data[tool])
 
-        files = len(self.scripts) + len(self.icons) + len(self.modules)
+        files: int = 0
+        if self.install_icons:
+            files += len(self.icons)
+        if self.install_scripts:
+            files += len(self.scripts) + len(self.modules)
         self.install_steps = files
 
-        self.status_widget.setText('Downloading icons')
-        asyncio.run(
-            self._install_files(self.icons, self.icons_path, 'icons/')
-        )
+        if self.install_icons:
+            self.status_widget.setText('Downloading icons')
+            asyncio.run(
+                self._install_files(self.icons, self.icons_path, 'icons/')
+            )
         if self.install_scripts:
             self.status_widget.setText('Downloading scripts')
             asyncio.run(
@@ -459,26 +468,32 @@ class InstallerWindow(MayaQWidgetBaseMixin, QDialog):
         Attempt to find the local install directory for the toolbox and prefill
         the input. If the nothing can be found then the input will remain empty.
         """
-        if os.path.exists(_NETWORK_ROOT):
-            # Bring run from a workstation in Cirkus. Go direrectly to the local
-            # path for tools.
-            path = f'{_NETWORK_ROOT}/Job_3/System/Deployment/Toolbox'
-            toolbox_shelf_file = 'toolboxShelf.json'
+        # Candidate roots to check, in order. _NETWORK_ROOT is a hardcoded UNC
+        # path that only resolves on machines with direct \\bigtop\bigtop access.
+        # DEPLOY_PATH is the same env var Maya.env already uses for
+        # MAYA_SCRIPT_PATH/PYTHONPATH/XBMLANGPATH, so it works regardless of how
+        # the network share happens to be mapped (drive letter, Dropbox path, etc).
+        candidates = [f'{_NETWORK_ROOT}/Job_3/System/Deployment/Toolbox']
+        deploy_path = os.getenv('DEPLOY_PATH')
+        if deploy_path:
+            candidates.append(os.path.join(deploy_path, 'Toolbox'))
 
+        toolbox_shelf_file = 'toolboxShelf.json'
+
+        for path in candidates:
             if not os.path.exists(path):
-                cmds.warning(f'Cannot find local toolbox install: Has the Toolbox been moved from "{path}"?')
-                return
-
-            files_in = os.listdir(path)
-            if toolbox_shelf_file not in files_in:
+                continue
+            if toolbox_shelf_file not in os.listdir(path):
                 cmds.warning(f'Missing toolboxShelf.json from {path}')
-                return
+                continue
 
             # Set network updates to be done locally by default. This is
             # only set as a default as it's likely these files be up-to-date and
             # be much faster to update from then downloading.
             self._install_local_text.setText(path)
+            self._local_toolbox_dir = path;
             self._install_from_options.setCurrentIndex(1)
+            self._fetch_tools_data()
             return
 
         # Set text to empty if not on a network drive
@@ -504,6 +519,10 @@ class InstallerWindow(MayaQWidgetBaseMixin, QDialog):
                 self.install_btn.setEnabled(False)
                 self._load_tools(None)
                 return
+            # _fetch_tools_data() already loaded the local toolboxShelf.json.
+            # Don't clobber it with remote data below.
+            self.install_btn.setEnabled(True)
+            return
         self._load_tools(self._remote_data)
         self.install_btn.setEnabled(True)
 
@@ -513,11 +532,30 @@ class InstallerWindow(MayaQWidgetBaseMixin, QDialog):
         If the directory does not have the required files to install the tools from then
         a warning will be shown and not be set.
         """
-        responce = QFileDialog.getExistingDirectory(
-            parent=self,
-            caption='Select install directory',
-            directory=os.getcwd()
-        )
+        default_dir = os.getcwd()
+        if self._install_local_text.text() != '':
+            default_dir = self._install_local_text.text()
+
+        # Built as an explicit instance (rather than the static
+        # getExistingDirectory convenience call) so it can be forced to the
+        # front - dialogs spawned from a MayaQWidgetBaseMixin window can
+        # otherwise open behind the main Maya window with no visible sign
+        # they opened at all.
+        dialog = QFileDialog(self, 'Select install directory', default_dir)
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        dialog.raise_()
+        dialog.activateWindow()
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = dialog.selectedFiles()
+        if not selected:
+            return
+        responce = selected[0]
 
         # ignore cancels
         if responce is None or len(responce) == 0:
@@ -556,6 +594,12 @@ class InstallerWindow(MayaQWidgetBaseMixin, QDialog):
         local_layout = QHBoxLayout()
         local_widget = QWidget(layout=local_layout, visible=self._install_from_options.currentIndex())
         open_search_btn = QPushButton(icon=QIcon(':/folder-open.png'))
+        # Fall back to a text label if the ':/folder-open.png' Qt resource isn't
+        # registered in this build - otherwise the button can render with no
+        # icon and effectively no visible/clickable hit area.
+        if open_search_btn.icon().isNull():
+            open_search_btn.setText('...')
+        open_search_btn.setMinimumWidth(30)
         self._install_local_text = QLineEdit(disabled=True)
         local_layout.addWidget(self._install_local_text)
         local_layout.addWidget(open_search_btn)
@@ -634,10 +678,17 @@ class InstallerWindow(MayaQWidgetBaseMixin, QDialog):
 
         # Install Type
         self.scripts_install_loc = QComboBox()
+        self.scripts_install_loc.setStatusTip(
+            'Set where all scripts are installed. Default\'s to not installing any for pre installed scripts.'
+            )
         self.icons_install_loc = QComboBox()
+        self.icons_install_loc.setStatusTip(
+            'Set where icons are installed. Default\'s to not installing any for pre installed icons.'
+            )
         self.shelf_name = QLineEdit(placeholderText='CoolTool')
 
-        self.scripts_install_loc.addItem('Manually Install')
+        self.scripts_install_loc.addItem(DEFAULT_PATH)
+        self.icons_install_loc.addItem(DEFAULT_PATH)
 
         # options_layout.addRow(QLabel('Install From'), self._install_from_options)
         options_layout.addRow(QLabel('Scripts Path'), self.scripts_install_loc)
